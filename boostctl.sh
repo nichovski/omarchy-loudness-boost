@@ -30,7 +30,41 @@ die() { echo "loudness-boost: $*" >&2; exit 1; }
 
 mkdir -p "$DROPIN_DIR" "$UNIT_DIR" "$STATE_DIR"
 
-gain_db() { cat "$GAIN_FILE" 2>/dev/null || echo "$DEFAULT_GAIN_DB"; }
+# Bounded reads of the small state files, so a tampered or oversized file
+# cannot be read into memory or trusted as a value.
+read_number() {
+  local value
+  value="$(head -c 32 "$1" 2>/dev/null | tr -d '[:space:]')"
+  if [[ $value =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$2"
+  fi
+}
+
+read_line() { head -c 256 "$1" 2>/dev/null | tr -d '\r\n'; }
+
+# Replace a file atomically. Refuses to follow a symlink at the target or to
+# overwrite a file owned by another user, so a planted link cannot make this
+# truncate an unrelated file. The temp file is created in the target directory
+# and renamed over the target, which replaces a link instead of writing
+# through it.
+write_atomic() {
+  local path="$1" dir tmp
+  dir="$(dirname "$path")"
+  if [[ -L $path ]]; then
+    die "refusing to write through symlink: $path"
+  fi
+  if [[ -e $path && ! -O $path ]]; then
+    die "refusing to overwrite a file this user does not own: $path"
+  fi
+  tmp="$(mktemp "$dir/.$(basename "$path").XXXXXX")" || die "cannot create a temp file in $dir"
+  cat > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+gain_db() { read_number "$GAIN_FILE" "$DEFAULT_GAIN_DB"; }
 
 clamp_gain() {
   awk -v g="$1" -v lo="$MIN_GAIN_DB" -v hi="$MAX_GAIN_DB" \
@@ -78,7 +112,7 @@ move_streams() {
 }
 
 write_host_conf() {
-  cat > "$HOST_CONF" <<'EOF'
+  write_atomic "$HOST_CONF" <<'EOF'
 # Created by the Loudness Boost Omarchy plugin.
 context.properties = { log.level = 0 }
 context.spa-libs = {
@@ -97,7 +131,7 @@ EOF
 write_filter() {
   local target="$1" gain="$2" g_in
   g_in="$(gain_linear "$gain")"
-  cat > "$FILTER_CONF" <<EOF
+  write_atomic "$FILTER_CONF" <<EOF
 # Created by the Loudness Boost Omarchy plugin.
 context.modules = [
   { name = libpipewire-module-filter-chain args = {
@@ -129,7 +163,7 @@ EOF
 }
 
 write_unit() {
-  cat > "$UNIT" <<EOF
+  write_atomic "$UNIT" <<EOF
 [Unit]
 Description=Loudness Boost filter chain
 After=pipewire.service wireplumber.service
@@ -153,7 +187,7 @@ emit_status() {
   service_active && sink_exists && active=true
   printf '{"active":%s,"gainDb":%s,"minDb":%s,"maxDb":%s,"sink":"%s","previousSink":"%s"}\n' \
     "$active" "$(gain_db)" "$MIN_GAIN_DB" "$MAX_GAIN_DB" "$SINK" \
-    "$(cat "$PREV_FILE" 2>/dev/null || echo "")"
+    "$(read_line "$PREV_FILE")"
 }
 
 cmd_enable() {
@@ -161,10 +195,10 @@ cmd_enable() {
   target="$(real_sink)"
   [[ -n $target ]] || die "no output device found"
   if [[ -n $want ]]; then
-    clamp_gain "$want" > "$GAIN_FILE"
+    clamp_gain "$want" | write_atomic "$GAIN_FILE"
   fi
   gain="$(gain_db)"
-  echo "$target" > "$PREV_FILE"
+  printf '%s\n' "$target" | write_atomic "$PREV_FILE"
   write_host_conf
   write_filter "$target" "$gain"
   write_unit
@@ -179,7 +213,7 @@ cmd_enable() {
 
 cmd_disable() {
   local prev
-  prev="$(cat "$PREV_FILE" 2>/dev/null || true)"
+  prev="$(read_line "$PREV_FILE")"
   if [[ -z $prev ]] || ! sink_named "$prev"; then
     prev="$(real_sink)"
   fi
@@ -195,7 +229,7 @@ cmd_set() {
   local gain node g_in
   [[ -n ${1:-} ]] || die "set needs a gain in dB"
   gain="$(clamp_gain "$1")"
-  echo "$gain" > "$GAIN_FILE"
+  printf '%s\n' "$gain" | write_atomic "$GAIN_FILE"
   if service_active && sink_exists; then
     node="$(node_id)"
     if [[ -n $node ]]; then
