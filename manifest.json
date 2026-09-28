@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "nichovski.loudness-boost",
+  "name": "Loudness Boost",
+  "version": "1.0.0",
+  "author": "nichovski",
+  "license": "MIT",
+  "description": "Make quiet audio louder: routes the output through a gain and limiter so quiet videos and songs reach full volume without clipping.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Loudness Boost",
+    "description": "Toggle a system-wide gain and limiter to lift quiet audio without clipping",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
