@@ -25,15 +25,23 @@ MIN_GAIN_DB=0
 MAX_GAIN_DB=30
 # -1 dB, leaves a little headroom so the limiter does not sit on the ceiling.
 THRESHOLD="0.891"
+# Written into every generated file, and required before one is replaced, so a
+# user-managed file at the same path is never overwritten.
+MARKER="# Created by the Loudness Boost Omarchy plugin."
 
 die() { echo "loudness-boost: $*" >&2; exit 1; }
 
 mkdir -p "$DROPIN_DIR" "$UNIT_DIR" "$STATE_DIR"
 
 # Bounded reads of the small state files, so a tampered or oversized file
-# cannot be read into memory or trusted as a value.
+# cannot be read into memory or trusted as a value. A non-regular file (a FIFO
+# or device) is never opened, so the poll cannot block on one.
 read_number() {
   local value
+  if [[ ! -f ${1:-} || -L ${1:-} ]]; then
+    printf '%s' "$2"
+    return
+  fi
   value="$(head -c 32 "$1" 2>/dev/null | tr -d '[:space:]')"
   if [[ $value =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     printf '%s' "$value"
@@ -42,21 +50,30 @@ read_number() {
   fi
 }
 
-read_line() { head -c 256 "$1" 2>/dev/null | tr -d '\r\n'; }
+read_line() {
+  if [[ ! -f ${1:-} || -L ${1:-} ]]; then
+    return 0
+  fi
+  head -c 256 "$1" 2>/dev/null | tr -d '\r\n'
+}
 
-# Replace a file atomically. Refuses to follow a symlink at the target or to
-# overwrite a file owned by another user, so a planted link cannot make this
-# truncate an unrelated file. The temp file is created in the target directory
-# and renamed over the target, which replaces a link instead of writing
-# through it.
+# Replace a file atomically. Refuses to follow a symlink at the target, to
+# replace a non-regular file, to overwrite a file owned by another user, or to
+# overwrite one that does not carry this plugin's marker. The temp file is
+# created in the target directory and renamed over the target, which replaces a
+# link instead of writing through it.
 write_atomic() {
-  local path="$1" dir tmp
+  local path="$1" marker="${2:-}" dir tmp
   dir="$(dirname "$path")"
   if [[ -L $path ]]; then
     die "refusing to write through symlink: $path"
   fi
-  if [[ -e $path && ! -O $path ]]; then
-    die "refusing to overwrite a file this user does not own: $path"
+  if [[ -e $path ]]; then
+    [[ -f $path ]] || die "refusing to replace a non-regular file: $path"
+    [[ -O $path ]] || die "refusing to overwrite a file this user does not own: $path"
+    if [[ -n $marker ]] && ! grep -qF -- "$marker" "$path"; then
+      die "refusing to overwrite a file not created by this plugin: $path"
+    fi
   fi
   tmp="$(mktemp "$dir/.$(basename "$path").XXXXXX")" || die "cannot create a temp file in $dir"
   cat > "$tmp"
@@ -112,7 +129,7 @@ move_streams() {
 }
 
 write_host_conf() {
-  write_atomic "$HOST_CONF" <<'EOF'
+  write_atomic "$HOST_CONF" "$MARKER" <<'EOF'
 # Created by the Loudness Boost Omarchy plugin.
 context.properties = { log.level = 0 }
 context.spa-libs = {
@@ -131,7 +148,7 @@ EOF
 write_filter() {
   local target="$1" gain="$2" g_in
   g_in="$(gain_linear "$gain")"
-  write_atomic "$FILTER_CONF" <<EOF
+  write_atomic "$FILTER_CONF" "$MARKER" <<EOF
 # Created by the Loudness Boost Omarchy plugin.
 context.modules = [
   { name = libpipewire-module-filter-chain args = {
@@ -163,7 +180,8 @@ EOF
 }
 
 write_unit() {
-  write_atomic "$UNIT" <<EOF
+  write_atomic "$UNIT" "$MARKER" <<EOF
+$MARKER
 [Unit]
 Description=Loudness Boost filter chain
 After=pipewire.service wireplumber.service
