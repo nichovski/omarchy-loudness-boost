@@ -23,7 +23,7 @@ Omarchy asks where to put the bar widget. That is the whole installation.
 package list, so it is already there on a normal system. If it is missing:
 
 ```bash
-sudo pacman -S lsp-plugins-lv2
+omarchy pkg add lsp-plugins-lv2
 ```
 
 ## Using it
