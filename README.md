@@ -60,7 +60,9 @@ take down your main audio.
 
 State lives in `~/.config/omarchy-loudness-boost/`, and the generated PipeWire
 and systemd files are written under `~/.config/pipewire/` and
-`~/.config/systemd/user/`.
+`~/.config/systemd/user/`. The plugin records the exact bytes it wrote for each
+of those files and refuses to replace any of them once they change, so your own
+edits are never overwritten.
 
 ## Removal
 

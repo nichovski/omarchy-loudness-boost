@@ -57,13 +57,36 @@ read_line() {
   head -c 256 "$1" 2>/dev/null | tr -d '\r\n'
 }
 
-# Replace a file atomically. Refuses to follow a symlink at the target, to
-# replace a non-regular file, to overwrite a file owned by another user, or to
-# overwrite one that does not carry this plugin's marker. The temp file is
+# The exact bytes this plugin last wrote, per path. A generated file is only
+# replaced when its current bytes match this record, so a user edit (or a
+# different file placed at the same path) is refused instead of overwritten.
+LEDGER="$STATE_DIR/generated.sha256"
+
+ledger_hash() {
+  [[ -f $LEDGER && ! -L $LEDGER ]] || return 0
+  head -c 262144 "$LEDGER" 2>/dev/null | awk -v p="$1" '$2 == p { print $1; exit }'
+}
+
+record_hash() {
+  local path="$1" hash="$2" tmp
+  tmp="$(mktemp "$STATE_DIR/.generated.XXXXXX")" || die "cannot create a temp file in $STATE_DIR"
+  {
+    if [[ -f $LEDGER && ! -L $LEDGER ]]; then
+      head -c 262144 "$LEDGER" | awk -v p="$path" '$2 != p'
+    fi
+    printf '%s  %s\n' "$hash" "$path"
+  } > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$LEDGER"
+}
+
+# Replace a file atomically, but only when this plugin last wrote it. Refuses a
+# symlink at the target, a non-regular file, a file owned by another user, and
+# a file whose bytes differ from the recorded last write. The temp file is
 # created in the target directory and renamed over the target, which replaces a
 # link instead of writing through it.
 write_atomic() {
-  local path="$1" marker="${2:-}" dir tmp
+  local path="$1" dir tmp hash current recorded
   dir="$(dirname "$path")"
   if [[ -L $path ]]; then
     die "refusing to write through symlink: $path"
@@ -71,14 +94,21 @@ write_atomic() {
   if [[ -e $path ]]; then
     [[ -f $path ]] || die "refusing to replace a non-regular file: $path"
     [[ -O $path ]] || die "refusing to overwrite a file this user does not own: $path"
-    if [[ -n $marker ]] && ! grep -qF -- "$marker" "$path"; then
-      die "refusing to overwrite a file not created by this plugin: $path"
-    fi
   fi
   tmp="$(mktemp "$dir/.$(basename "$path").XXXXXX")" || die "cannot create a temp file in $dir"
   cat > "$tmp"
   chmod 0644 "$tmp"
+  if [[ -e $path ]]; then
+    current="$(sha256sum "$path" | awk '{ print $1 }')"
+    recorded="$(ledger_hash "$path")"
+    if [[ -z $recorded || $recorded != "$current" ]]; then
+      rm -f -- "$tmp"
+      die "refusing to overwrite a file this plugin did not last write: $path"
+    fi
+  fi
+  hash="$(sha256sum "$tmp" | awk '{ print $1 }')"
   mv -f -- "$tmp" "$path"
+  record_hash "$path" "$hash"
 }
 
 gain_db() { read_number "$GAIN_FILE" "$DEFAULT_GAIN_DB"; }
@@ -129,7 +159,7 @@ move_streams() {
 }
 
 write_host_conf() {
-  write_atomic "$HOST_CONF" "$MARKER" <<'EOF'
+  write_atomic "$HOST_CONF" <<'EOF'
 # Created by the Loudness Boost Omarchy plugin.
 context.properties = { log.level = 0 }
 context.spa-libs = {
@@ -148,7 +178,7 @@ EOF
 write_filter() {
   local target="$1" gain="$2" g_in
   g_in="$(gain_linear "$gain")"
-  write_atomic "$FILTER_CONF" "$MARKER" <<EOF
+  write_atomic "$FILTER_CONF" <<EOF
 # Created by the Loudness Boost Omarchy plugin.
 context.modules = [
   { name = libpipewire-module-filter-chain args = {
@@ -180,7 +210,7 @@ EOF
 }
 
 write_unit() {
-  write_atomic "$UNIT" "$MARKER" <<EOF
+  write_atomic "$UNIT" <<EOF
 $MARKER
 [Unit]
 Description=Loudness Boost filter chain
