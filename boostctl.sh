@@ -195,7 +195,15 @@ context.modules = [
     }
     audio.channels = 2
     audio.position = [ FL FR ]
-    capture.props = { node.name = "$SINK" media.class = Audio/Sink }
+    capture.props = {
+      node.name = "$SINK"
+      media.class = Audio/Sink
+      # WirePlumber owns volume and mute for streams and sinks and would
+      # otherwise restore a stale mute (silencing the boost) whenever the sink
+      # is recreated. The boost slider is the gain, so this sink opts out of
+      # that state restore entirely.
+      "state.restore-props" = false
+    }
     playback.props = {
       node.name = "${SINK}_output"
       node.passive = true
