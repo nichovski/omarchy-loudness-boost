@@ -255,6 +255,12 @@ cmd_enable() {
   for i in $(seq 1 40); do sink_exists && break; sleep 0.1; done
   sink_exists || die "boost output did not start (journalctl --user -u $SERVICE)"
   pactl set-default-sink "$SINK"
+  # WirePlumber remembers volume and mute per node and applies them again when
+  # the sink is recreated, so a mute left behind by an earlier run would start
+  # the boost silent. The slider is the gain, so the sink always starts unmuted
+  # at unity.
+  pactl set-sink-mute "$SINK" 0 >/dev/null 2>&1 || true
+  pactl set-sink-volume "$SINK" 100% >/dev/null 2>&1 || true
   move_streams "$SINK"
   emit_status
 }
